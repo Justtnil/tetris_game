@@ -1,6 +1,7 @@
 package com.example.tetris
 
 import android.app.Activity
+import android.content.Context
 import android.os.Bundle
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
@@ -11,6 +12,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -38,6 +40,13 @@ enum class Screen {
     Game
 }
 
+// Enum to define the difficulty levels and their corresponding speeds
+enum class Difficulty(val fallSpeed: Long) {
+    EASY(1000L),
+    HARD(550L),
+    GOD_TIER(300L)
+}
+
 // --- State Management for Pause (Shared between Activity and Composable) ---
 private val _pausedState = MutableStateFlow(false)
 val pausedState: StateFlow<Boolean> = _pausedState.asStateFlow()
@@ -46,8 +55,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            // State to manage which screen is currently visible
+            // Hoisted state for navigation and difficulty
             var currentScreen by remember { mutableStateOf(Screen.Start) }
+            var selectedDifficulty by remember { mutableStateOf(Difficulty.EASY) }
             val activity = LocalContext.current as Activity
 
             // Navigation logic
@@ -55,18 +65,22 @@ class MainActivity : ComponentActivity() {
                 Screen.Start -> {
                     StartScreen(
                         onPlayClick = { currentScreen = Screen.Game },
-                        onExitClick = { activity.finish() }
+                        onExitClick = { activity.finish() },
+                        currentDifficulty = selectedDifficulty,
+                        onDifficultyChange = { newDifficulty -> selectedDifficulty = newDifficulty }
                     )
                 }
                 Screen.Game -> {
-                    // This handles the device's back button press
                     BackHandler {
                         currentScreen = Screen.Start
                     }
                     val isPaused by pausedState.collectAsState()
-                    TetrisGame(isPaused = isPaused) {
-                        _pausedState.value = it
-                    }
+                    TetrisGame(
+                        isPaused = isPaused,
+                        onPauseToggle = { _pausedState.value = it },
+                        difficulty = selectedDifficulty,
+                        onNewGameClick = { currentScreen = Screen.Start }
+                    )
                 }
             }
         }
@@ -82,8 +96,13 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun StartScreen(onPlayClick: () -> Unit, onExitClick: () -> Unit) {
-    var showInfoDialog by remember { mutableStateOf(false) }
+fun StartScreen(
+    onPlayClick: () -> Unit,
+    onExitClick: () -> Unit,
+    currentDifficulty: Difficulty,
+    onDifficultyChange: (Difficulty) -> Unit
+) {
+    var showSettingsDialog by remember { mutableStateOf(false) }
 
     Box(
         modifier = Modifier
@@ -104,39 +123,68 @@ fun StartScreen(onPlayClick: () -> Unit, onExitClick: () -> Unit) {
             Spacer(modifier = Modifier.height(32.dp))
             Button(
                 onClick = onPlayClick,
-                modifier = Modifier.width(120.dp)
+                modifier = Modifier.width(150.dp)
             ) {
                 Text("Play", fontSize = 22.sp)
             }
             Button(
-                onClick = { showInfoDialog = true },
-                modifier = Modifier.width(120.dp)
+                onClick = { showSettingsDialog = true },
+                modifier = Modifier.width(150.dp)
             ) {
-                Text("Info", fontSize = 22.sp)
+                Text("Settings", fontSize = 22.sp)
             }
             Button(
                 onClick = onExitClick,
-                modifier = Modifier.width(120.dp)
+                modifier = Modifier.width(150.dp)
             ) {
                 Text("Exit", fontSize = 22.sp)
             }
         }
     }
 
-    if (showInfoDialog) {
+    if (showSettingsDialog) {
         AlertDialog(
-            onDismissRequest = { showInfoDialog = false },
-            title = { Text("Game Controls", fontSize = 24.sp) },
+            onDismissRequest = { showSettingsDialog = false },
+            title = { Text("Settings & Info", fontSize = 24.sp) },
             text = {
                 Column {
-                    Text("• Arrow Buttons: Move and rotate the piece.", fontSize = 16.sp)
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text("• Volume Down Button: Pause or resume the game.", fontSize = 16.sp)
+                    // Controls Info
+                    Text("Game Controls", fontWeight = FontWeight.Bold)
+                    Text("• Arrow Buttons: Move and rotate the piece.")
+                    Text("• Volume Down Button: Pause or resume the game.")
+
+                    Spacer(modifier = Modifier.height(24.dp))
+
+                    // Hardness Level Selection
+                    Text("Hardness Level", fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // Create a button for each difficulty level
+                        Difficulty.values().forEach { difficulty ->
+                            Button(
+                                onClick = { onDifficultyChange(difficulty) },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (currentDifficulty == difficulty) Color.DarkGray else Color.Gray
+                                )
+                            ) {
+                                Text(
+                                    text = difficulty.name.replace("_", " ").lowercase()
+                                        .replaceFirstChar { it.titlecase() },
+                                    fontSize = 12.sp,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                    }
                 }
             },
             confirmButton = {
-                Button(onClick = { showInfoDialog = false }) {
-                    Text("Got it!")
+                Button(onClick = { showSettingsDialog = false }) {
+                    Text("Close")
                 }
             }
         )
@@ -147,59 +195,58 @@ fun StartScreen(onPlayClick: () -> Unit, onExitClick: () -> Unit) {
 @Composable
 fun TetrisGame(
     isPaused: Boolean,
-    onPauseToggle: (Boolean) -> Unit
+    onPauseToggle: (Boolean) -> Unit,
+    difficulty: Difficulty,
+    onNewGameClick: () -> Unit
 ) {
-    // --- Game Constants ---
+    // --- Game Constants & State ---
     val gridWidth = 10
     val gridHeight = 20
-
-    // --- Colors ---
     val black = Color(0, 0, 0)
     val gray = Color(128, 128, 128)
     val white = Color(255, 255, 255)
     val colors = listOf(
-        Color(163, 218, 212), // I
-        Color(168, 207, 255), // J
-        Color(255, 213, 153), // L
-        Color(255, 243, 193), // O
-        Color(191, 216, 184), // S
-        Color(211, 188, 230), // T
-        Color(242, 182, 182)  // Z
+        Color(163, 218, 212), Color(168, 207, 255), Color(255, 213, 153),
+        Color(255, 243, 193), Color(191, 216, 184), Color(211, 188, 230),
+        Color(242, 182, 182)
+    )
+    val shapes = listOf(
+        listOf(listOf(1, 1, 1, 1)), listOf(listOf(1, 0, 0), listOf(1, 1, 1)),
+        listOf(listOf(0, 0, 1), listOf(1, 1, 1)), listOf(listOf(1, 1), listOf(1, 1)),
+        listOf(listOf(0, 1, 1), listOf(1, 1, 0)), listOf(listOf(0, 1, 0), listOf(1, 1, 1)),
+        listOf(listOf(1, 1, 0), listOf(0, 1, 1))
     )
 
-    // --- Shapes ---
-    val shapes = listOf(
-        listOf(listOf(1, 1, 1, 1)), // I
-        listOf(listOf(1, 0, 0), listOf(1, 1, 1)), // J
-        listOf(listOf(0, 0, 1), listOf(1, 1, 1)), // L
-        listOf(listOf(1, 1), listOf(1, 1)), // O
-        listOf(listOf(0, 1, 1), listOf(1, 1, 0)), // S
-        listOf(listOf(0, 1, 0), listOf(1, 1, 1)), // T
-        listOf(listOf(1, 1, 0), listOf(0, 1, 1))  // Z
-    )
+    // --- High Score SharedPreferences ---
+    val context = LocalContext.current
+    val sharedPreferences = remember {
+        context.getSharedPreferences("TetrisHighScore", Context.MODE_PRIVATE)
+    }
 
     // --- Game State ---
     var score by remember { mutableStateOf(0) }
+    var highScore by remember { mutableStateOf(sharedPreferences.getInt("high_score", 0)) }
     var showInfoDialog by remember { mutableStateOf(false) }
     var currentPiece by remember { mutableStateOf(getNewPiece(shapes, colors, gridWidth)) }
     var nextPiece by remember { mutableStateOf(getNewPiece(shapes, colors, gridWidth)) }
     var lockedPositions by remember { mutableStateOf(mapOf<Pair<Int, Int>, Color>()) }
     var gameOver by remember { mutableStateOf(false) }
 
-    // --- Reset Game Function ---
-    fun resetGame() {
-        score = 0
-        lockedPositions = emptyMap()
-        currentPiece = getNewPiece(shapes, colors, gridWidth)
-        nextPiece = getNewPiece(shapes, colors, gridWidth)
-        gameOver = false
+    // --- Game Logic Functions ---
+    fun updateHighScore() {
+        if (score > highScore) {
+            highScore = score
+            with(sharedPreferences.edit()) {
+                putInt("high_score", highScore)
+                apply()
+            }
+        }
     }
 
-
     // --- Game Loop ---
-    LaunchedEffect(key1 = isPaused, key2 = gameOver) {
+    LaunchedEffect(key1 = isPaused, key2 = gameOver, key3 = difficulty) {
         if (!isPaused && !gameOver) {
-            val fallSpeed = 550L
+            val fallSpeed = difficulty.fallSpeed
             while (isActive) {
                 delay(fallSpeed)
                 val newPiece = currentPiece.copy(y = currentPiece.y + 1)
@@ -226,6 +273,7 @@ fun TetrisGame(
                     nextPiece = getNewPiece(shapes, colors, gridWidth)
                     if (!validSpace(currentPiece, lockedPositions, gridWidth, gridHeight)) {
                         gameOver = true
+                        updateHighScore()
                     }
                 }
             }
@@ -243,17 +291,13 @@ fun TetrisGame(
                 .fillMaxSize(),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Spacer to push the game area down from the status bar
             Spacer(modifier = Modifier.height(100.dp))
-
-            // Main Row for the Game Grid and the Side Panel
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
                     .padding(horizontal = 8.dp)
             ) {
-                // Game Canvas on the left
                 Canvas(
                     modifier = Modifier
                         .fillMaxHeight()
@@ -263,8 +307,6 @@ fun TetrisGame(
                     drawGrid(lockedPositions, gridWidth, gridHeight, newBlockSize, black, gray)
                     drawPiece(currentPiece, newBlockSize)
                 }
-
-                // Side Panel on the right
                 Column(
                     modifier = Modifier
                         .fillMaxHeight()
@@ -272,36 +314,29 @@ fun TetrisGame(
                         .padding(start = 8.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    // 1. Info Button at the top
-                    Button(
-                        onClick = { showInfoDialog = true },
-                    ) {
+                    Button(onClick = {
+                        showInfoDialog = true
+                        onPauseToggle(true)
+                    }) {
                         Text("i", fontSize = 22.sp, fontWeight = FontWeight.Bold)
                     }
-
-                    Spacer(modifier = Modifier.height(150.dp))
-
-                    // 2. Score display below the button
+                    Spacer(modifier = Modifier.height(48.dp))
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("High Score", color = Color.LightGray, fontSize = 16.sp)
+                        Text(text = "$highScore", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(modifier = Modifier.height(24.dp))
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text("Score", color = Color.LightGray, fontSize = 20.sp)
-                        Text(
-                            text = "$score",
-                            color = Color.White,
-                            fontSize = 30.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Text(text = "$score", color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.Bold)
                     }
-
-                    // This weighted spacer pushes the Next Piece Preview to the bottom
-                    Spacer(Modifier.weight(10f))
-
-                    // 3. Next Piece Preview at the bottom
+                    Spacer(Modifier.weight(1f))
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text("Next", color = Color.LightGray, fontSize = 20.sp)
                         Canvas(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 80.dp)
+                                .padding(vertical = 40.dp)
                                 .aspectRatio(1f)
                         ) {
                             val previewGridSize = 4
@@ -316,97 +351,34 @@ fun TetrisGame(
                     }
                 }
             }
-
-            // --- ADAPTIVE CONTROLS (SOLUTION 3) ---
             BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(bottom = 100.dp, start = 16.dp, end = 16.dp),
                 contentAlignment = Alignment.Center
             ) {
-                // Check the available width. The 360.dp is a common breakpoint for small phones.
                 if (maxWidth < 360.dp) {
-                    // --- ON NARROW SCREENS: Show two rows ---
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                            Button(onClick = {
-                                if (!isPaused && !gameOver) {
-                                    val newPiece = currentPiece.copy(x = currentPiece.x - 1)
-                                    if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) {
-                                        currentPiece = newPiece
-                                    }
-                                }
-                            }) { Text("←") }
-                            Button(onClick = {
-                                if (!isPaused && !gameOver) {
-                                    val newPiece = currentPiece.copy(x = currentPiece.x + 1)
-                                    if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) {
-                                        currentPiece = newPiece
-                                    }
-                                }
-                            }) { Text("→") }
+                            Button(onClick = { if (!isPaused && !gameOver) { val newPiece = currentPiece.copy(x = currentPiece.x - 1); if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) { currentPiece = newPiece } } }) { Text("←") }
+                            Button(onClick = { if (!isPaused && !gameOver) { val newPiece = currentPiece.copy(x = currentPiece.x + 1); if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) { currentPiece = newPiece } } }) { Text("→") }
                         }
                         Spacer(modifier = Modifier.height(8.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                            Button(onClick = {
-                                if (!isPaused && !gameOver) {
-                                    val newPiece = currentPiece.copy(y = currentPiece.y + 1)
-                                    if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) {
-                                        currentPiece = newPiece
-                                    }
-                                }
-                            }) { Text("↓") }
-                            Button(onClick = {
-                                if (!isPaused && !gameOver) {
-                                    val newPiece = currentPiece.copy(rotation = (currentPiece.rotation + 1) % 4)
-                                    if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) {
-                                        currentPiece = newPiece
-                                    }
-                                }
-                            }) { Text("↻") }
+                            Button(onClick = { if (!isPaused && !gameOver) { val newPiece = currentPiece.copy(y = currentPiece.y + 1); if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) { currentPiece = newPiece } } }) { Text("↓") }
+                            Button(onClick = { if (!isPaused && !gameOver) { val newPiece = currentPiece.copy(rotation = (currentPiece.rotation + 1) % 4); if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) { currentPiece = newPiece } } }) { Text("↻") }
                         }
                     }
                 } else {
-                    // --- ON WIDER SCREENS: Show a single row ---
                     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                        Button(onClick = {
-                            if (!isPaused && !gameOver) {
-                                val newPiece = currentPiece.copy(x = currentPiece.x - 1)
-                                if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) {
-                                    currentPiece = newPiece
-                                }
-                            }
-                        }) { Text("←") }
-                        Button(onClick = {
-                            if (!isPaused && !gameOver) {
-                                val newPiece = currentPiece.copy(x = currentPiece.x + 1)
-                                if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) {
-                                    currentPiece = newPiece
-                                }
-                            }
-                        }) { Text("→") }
-                        Button(onClick = {
-                            if (!isPaused && !gameOver) {
-                                val newPiece = currentPiece.copy(y = currentPiece.y + 1)
-                                if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) {
-                                    currentPiece = newPiece
-                                }
-                            }
-                        }) { Text("↓") }
-                        Button(onClick = {
-                            if (!isPaused && !gameOver) {
-                                val newPiece = currentPiece.copy(rotation = (currentPiece.rotation + 1) % 4)
-                                if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) {
-                                    currentPiece = newPiece
-                                }
-                            }
-                        }) { Text("↻") }
+                        Button(onClick = { if (!isPaused && !gameOver) { val newPiece = currentPiece.copy(x = currentPiece.x - 1); if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) { currentPiece = newPiece } } }) { Text("←") }
+                        Button(onClick = { if (!isPaused && !gameOver) { val newPiece = currentPiece.copy(x = currentPiece.x + 1); if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) { currentPiece = newPiece } } }) { Text("→") }
+                        Button(onClick = { if (!isPaused && !gameOver) { val newPiece = currentPiece.copy(y = currentPiece.y + 1); if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) { currentPiece = newPiece } } }) { Text("↓") }
+                        Button(onClick = { if (!isPaused && !gameOver) { val newPiece = currentPiece.copy(rotation = (currentPiece.rotation + 1) % 4); if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) { currentPiece = newPiece } } }) { Text("↻") }
                     }
                 }
             }
         }
-
-        // --- Overlays ---
         if (isPaused || gameOver) {
             Box(
                 modifier = Modifier
@@ -419,43 +391,48 @@ fun TetrisGame(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
-                        Text(
-                            text = "Game Over\nFinal Score: $score",
-                            color = white,
-                            fontSize = 48.sp,
-                            textAlign = TextAlign.Center,
-                            lineHeight = 60.sp
-                        )
+                        Text(text = "Game Over\nFinal Score: $score", color = white, fontSize = 48.sp, textAlign = TextAlign.Center, lineHeight = 60.sp)
                         Spacer(modifier = Modifier.height(24.dp))
-                        Button(onClick = { resetGame() }) {
-                            Text("Reset Game", fontSize = 20.sp)
+                        Button(onClick = onNewGameClick) {
+                            Text("New Game", fontSize = 20.sp)
                         }
                     }
-                } else {
-                    Text(
-                        text = "Paused",
-                        color = white,
-                        fontSize = 48.sp,
-                        textAlign = TextAlign.Center
-                    )
+                } else if (!showInfoDialog) {
+                    Text(text = "Paused", color = white, fontSize = 48.sp, textAlign = TextAlign.Center)
                 }
             }
         }
-
         if (showInfoDialog) {
             AlertDialog(
-                onDismissRequest = { showInfoDialog = false },
-                title = { Text("Game Controls", fontSize = 24.sp) },
+                onDismissRequest = {
+                    showInfoDialog = false
+                    onPauseToggle(false)
+                },
+                title = { Text("Game Controls") },
                 text = {
                     Column {
-                        Text("• Arrow Buttons: Move and rotate the piece.", fontSize = 16.sp)
+                        Text("• Arrow Buttons: Move and rotate the piece.")
                         Spacer(modifier = Modifier.height(16.dp))
-                        Text("• Volume Down Button: Pause or resume the game.", fontSize = 16.sp)
+                        Text("• Volume Down Button: Pause or resume the game.")
                     }
                 },
+                // Primary action button
                 confirmButton = {
-                    Button(onClick = { showInfoDialog = false }) {
-                        Text("Got it!")
+                    Button(onClick = {
+                        showInfoDialog = false
+                        onPauseToggle(false)
+                    }) {
+                        Text("Resume")
+                    }
+                },
+                // Secondary action button
+                dismissButton = {
+                    Button(onClick = {
+                        showInfoDialog = false
+                        onPauseToggle(false) // Unpause before navigating
+                        onNewGameClick()      // Go to start screen
+                    }) {
+                        Text("Restart")
                     }
                 }
             )
@@ -465,28 +442,21 @@ fun TetrisGame(
 
 
 // --- Data Class & Utility Functions ---
-
-data class Piece(
-    val x: Int, val y: Int, val shape: List<List<Int>>, val color: Color, val rotation: Int = 0
-) {
+data class Piece(val x: Int, val y: Int, val shape: List<List<Int>>, val color: Color, val rotation: Int = 0) {
     fun rotatedShape(): List<List<Int>> {
         var result = shape
         repeat(rotation) {
-            result = result[0].indices.map { j ->
-                result.indices.reversed().map { i -> result[i][j] }
-            }
+            result = result[0].indices.map { j -> result.indices.reversed().map { i -> result[i][j] } }
         }
         return result
     }
 }
-
 fun getNewPiece(shapes: List<List<List<Int>>>, colors: List<Color>, gridWidth: Int): Piece {
     val index = Random.nextInt(shapes.size)
     val shape = shapes[index]
     val startX = (gridWidth - shape[0].size) / 2
     return Piece(startX, -1, shape, colors[index])
 }
-
 fun validSpace(piece: Piece, locked: Map<Pair<Int, Int>, Color>, gridWidth: Int, gridHeight: Int): Boolean {
     val shape = piece.rotatedShape()
     for (i in shape.indices) {
@@ -494,40 +464,18 @@ fun validSpace(piece: Piece, locked: Map<Pair<Int, Int>, Color>, gridWidth: Int,
             if (shape[i][j] == 1) {
                 val newX = piece.x + j
                 val newY = piece.y + i
-                if (newX < 0 || newX >= gridWidth || newY >= gridHeight) {
-                    return false
-                }
-                if (newY >= 0 && locked.containsKey(Pair(newX, newY))) {
-                    return false
-                }
+                if (newX < 0 || newX >= gridWidth || newY >= gridHeight) { return false }
+                if (newY >= 0 && locked.containsKey(Pair(newX, newY))) { return false }
             }
         }
     }
     return true
 }
-
-fun clearRows(
-    locked: Map<Pair<Int, Int>, Color>,
-    gridWidth: Int,
-    gridHeight: Int
-): Pair<Map<Pair<Int, Int>, Color>, Int> {
-
-    val fullRows = (0 until gridHeight).filter { y ->
-        (0 until gridWidth).all { x -> locked.containsKey(Pair(x, y)) }
-    }
-
-    if (fullRows.isEmpty()) {
-        return Pair(locked, 0)
-    }
-
+fun clearRows(locked: Map<Pair<Int, Int>, Color>, gridWidth: Int, gridHeight: Int): Pair<Map<Pair<Int, Int>, Color>, Int> {
+    val fullRows = (0 until gridHeight).filter { y -> (0 until gridWidth).all { x -> locked.containsKey(Pair(x, y)) } }
+    if (fullRows.isEmpty()) { return Pair(locked, 0) }
     val newLocked = locked.toMutableMap()
-
-    fullRows.forEach { y ->
-        (0 until gridWidth).forEach { x ->
-            newLocked.remove(Pair(x, y))
-        }
-    }
-
+    fullRows.forEach { y -> (0 until gridWidth).forEach { x -> newLocked.remove(Pair(x, y)) } }
     val shiftedLocked = mutableMapOf<Pair<Int, Int>, Color>()
     newLocked.entries.sortedBy { it.key.second }.forEach { (pos, color) ->
         val (x, y) = pos
@@ -538,44 +486,18 @@ fun clearRows(
             shiftedLocked[pos] = color
         }
     }
-
     return Pair(shiftedLocked, fullRows.size)
 }
-
-fun DrawScope.drawGrid(
-    locked: Map<Pair<Int, Int>, Color>,
-    gridWidth: Int,
-    gridHeight: Int,
-    blockSize: Float,
-    black: Color,
-    gray: Color
-) {
+fun DrawScope.drawGrid(locked: Map<Pair<Int, Int>, Color>, gridWidth: Int, gridHeight: Int, blockSize: Float, black: Color, gray: Color) {
     for (y in 0 until gridHeight) {
         for (x in 0 until gridWidth) {
             val color = locked.getOrDefault(Pair(x, y), black)
-            drawRect(
-                color = color,
-                topLeft = Offset(x * blockSize, y * blockSize),
-                size = Size(blockSize, blockSize)
-            )
+            drawRect(color = color, topLeft = Offset(x * blockSize, y * blockSize), size = Size(blockSize, blockSize))
         }
     }
-    for (i in 0..gridWidth) {
-        drawLine(
-            color = gray,
-            start = Offset(i * blockSize, 0f),
-            end = Offset(i * blockSize, gridHeight * blockSize)
-        )
-    }
-    for (i in 0..gridHeight) {
-        drawLine(
-            color = gray,
-            start = Offset(0f, i * blockSize),
-            end = Offset(gridWidth * blockSize, i * blockSize)
-        )
-    }
+    for (i in 0..gridWidth) { drawLine(color = gray, start = Offset(i * blockSize, 0f), end = Offset(i * blockSize, gridHeight * blockSize)) }
+    for (i in 0..gridHeight) { drawLine(color = gray, start = Offset(0f, i * blockSize), end = Offset(gridWidth * blockSize, i * blockSize)) }
 }
-
 fun DrawScope.drawPiece(piece: Piece, blockSize: Float) {
     val shape = piece.rotatedShape()
     for (i in shape.indices) {
@@ -583,17 +505,8 @@ fun DrawScope.drawPiece(piece: Piece, blockSize: Float) {
             if (shape[i][j] == 1 && piece.y + i >= 0) {
                 val xPos = (piece.x + j) * blockSize
                 val yPos = (piece.y + i) * blockSize
-                drawRect(
-                    color = piece.color,
-                    topLeft = Offset(xPos, yPos),
-                    size = Size(blockSize, blockSize)
-                )
-                drawRect(
-                    color = Color.Black.copy(alpha = 0.2f),
-                    topLeft = Offset(xPos, yPos),
-                    size = Size(blockSize, blockSize),
-                    style = Stroke(width = 1.dp.toPx())
-                )
+                drawRect(color = piece.color, topLeft = Offset(xPos, yPos), size = Size(blockSize, blockSize))
+                drawRect(color = Color.Black.copy(alpha = 0.2f), topLeft = Offset(xPos, yPos), size = Size(blockSize, blockSize), style = Stroke(width = 1.dp.toPx()))
             }
         }
     }
