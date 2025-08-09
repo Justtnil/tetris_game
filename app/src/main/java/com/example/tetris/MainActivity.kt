@@ -2,6 +2,7 @@ package com.example.tetris
 
 import android.app.Activity
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
@@ -54,6 +55,17 @@ val pausedState: StateFlow<Boolean> = _pausedState.asStateFlow()
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // --- Version Check Logic ---
+        val sharedPrefs = getSharedPreferences("AppVersion", Context.MODE_PRIVATE)
+        val lastVersionCode = sharedPrefs.getInt("last_version_code", -1)
+        val currentVersionCode = try {
+            packageManager.getPackageInfo(packageName, 0).versionCode
+        } catch (e: PackageManager.NameNotFoundException) {
+            -1 // Should not happen
+        }
+        val showWelcomeDialog = currentVersionCode > lastVersionCode
+
         setContent {
             // Hoisted state for navigation and difficulty
             var currentScreen by remember { mutableStateOf(Screen.Start) }
@@ -67,7 +79,14 @@ class MainActivity : ComponentActivity() {
                         onPlayClick = { currentScreen = Screen.Game },
                         onExitClick = { activity.finish() },
                         currentDifficulty = selectedDifficulty,
-                        onDifficultyChange = { newDifficulty -> selectedDifficulty = newDifficulty }
+                        onDifficultyChange = { newDifficulty -> selectedDifficulty = newDifficulty },
+                        showWelcomeDialog = showWelcomeDialog,
+                        onWelcomeDialogDismiss = {
+                            with(sharedPrefs.edit()) {
+                                putInt("last_version_code", currentVersionCode)
+                                apply()
+                            }
+                        }
                     )
                 }
                 Screen.Game -> {
@@ -100,9 +119,13 @@ fun StartScreen(
     onPlayClick: () -> Unit,
     onExitClick: () -> Unit,
     currentDifficulty: Difficulty,
-    onDifficultyChange: (Difficulty) -> Unit
+    onDifficultyChange: (Difficulty) -> Unit,
+    showWelcomeDialog: Boolean,
+    onWelcomeDialogDismiss: () -> Unit
 ) {
     var showSettingsDialog by remember { mutableStateOf(false) }
+    var welcomeDialogVisible by remember { mutableStateOf(showWelcomeDialog) }
+
 
     Box(
         modifier = Modifier
@@ -142,27 +165,52 @@ fun StartScreen(
         }
     }
 
+    // --- Welcome/Update Dialog ---
+    if (welcomeDialogVisible) {
+        AlertDialog(
+            onDismissRequest = {
+                welcomeDialogVisible = false
+                onWelcomeDialogDismiss()
+            },
+            title = { Text("Welcome to Pixel Tetris!", fontSize = 24.sp) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Here's what you can do:", fontWeight = FontWeight.Bold)
+                    Text("• Choose Your Challenge: Visit the 'Settings' menu to select your difficulty.")
+                    Text("• Check Your Best: A new 'High Score' tracker is now in the game!")
+                    Text("• In-Game Help: Press the 'i' button during a game to pause and see the controls.")
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    welcomeDialogVisible = false
+                    onWelcomeDialogDismiss()
+                }) {
+                    Text("Got it!")
+                }
+            }
+        )
+    }
+
+
     if (showSettingsDialog) {
         AlertDialog(
             onDismissRequest = { showSettingsDialog = false },
             title = { Text("Settings & Info", fontSize = 24.sp) },
             text = {
                 Column {
-                    // Controls Info
                     Text("Game Controls", fontWeight = FontWeight.Bold)
                     Text("• Arrow Buttons: Move and rotate the piece.")
                     Text("• Volume Down Button: Pause or resume the game.")
 
                     Spacer(modifier = Modifier.height(24.dp))
 
-                    // Hardness Level Selection
                     Text("Hardness Level", fontWeight = FontWeight.Bold)
                     Spacer(modifier = Modifier.height(8.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // Create a button for each difficulty level
                         Difficulty.values().forEach { difficulty ->
                             Button(
                                 onClick = { onDifficultyChange(difficulty) },
@@ -199,7 +247,7 @@ fun TetrisGame(
     difficulty: Difficulty,
     onNewGameClick: () -> Unit
 ) {
-    // --- Game Constants & State ---
+    // --- Game Constants, State, and Logic (No changes below this line) ---
     val gridWidth = 10
     val gridHeight = 20
     val black = Color(0, 0, 0)
@@ -216,14 +264,10 @@ fun TetrisGame(
         listOf(listOf(0, 1, 1), listOf(1, 1, 0)), listOf(listOf(0, 1, 0), listOf(1, 1, 1)),
         listOf(listOf(1, 1, 0), listOf(0, 1, 1))
     )
-
-    // --- High Score SharedPreferences ---
     val context = LocalContext.current
     val sharedPreferences = remember {
         context.getSharedPreferences("TetrisHighScore", Context.MODE_PRIVATE)
     }
-
-    // --- Game State ---
     var score by remember { mutableStateOf(0) }
     var highScore by remember { mutableStateOf(sharedPreferences.getInt("high_score", 0)) }
     var showInfoDialog by remember { mutableStateOf(false) }
@@ -232,7 +276,6 @@ fun TetrisGame(
     var lockedPositions by remember { mutableStateOf(mapOf<Pair<Int, Int>, Color>()) }
     var gameOver by remember { mutableStateOf(false) }
 
-    // --- Game Logic Functions ---
     fun updateHighScore() {
         if (score > highScore) {
             highScore = score
@@ -243,7 +286,6 @@ fun TetrisGame(
         }
     }
 
-    // --- Game Loop ---
     LaunchedEffect(key1 = isPaused, key2 = gameOver, key3 = difficulty) {
         if (!isPaused && !gameOver) {
             val fallSpeed = difficulty.fallSpeed
@@ -280,7 +322,6 @@ fun TetrisGame(
         }
     }
 
-    // --- UI Layout ---
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -336,7 +377,7 @@ fun TetrisGame(
                         Canvas(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 40.dp)
+                                .padding(vertical = 80.dp)
                                 .aspectRatio(1f)
                         ) {
                             val previewGridSize = 4
@@ -416,7 +457,6 @@ fun TetrisGame(
                         Text("• Volume Down Button: Pause or resume the game.")
                     }
                 },
-                // Primary action button
                 confirmButton = {
                     Button(onClick = {
                         showInfoDialog = false
@@ -425,12 +465,11 @@ fun TetrisGame(
                         Text("Resume")
                     }
                 },
-                // Secondary action button
                 dismissButton = {
                     Button(onClick = {
                         showInfoDialog = false
-                        onPauseToggle(false) // Unpause before navigating
-                        onNewGameClick()      // Go to start screen
+                        onPauseToggle(false)
+                        onNewGameClick()
                     }) {
                         Text("Restart")
                     }
