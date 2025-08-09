@@ -1,13 +1,14 @@
 package com.example.tetris
 
+import android.app.Activity
 import android.os.Bundle
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
@@ -19,6 +20,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -30,6 +32,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlin.random.Random
 
+// Enum to define the screens in our app
+enum class Screen {
+    Start,
+    Game
+}
+
 // --- State Management for Pause (Shared between Activity and Composable) ---
 private val _pausedState = MutableStateFlow(false)
 val pausedState: StateFlow<Boolean> = _pausedState.asStateFlow()
@@ -38,9 +46,28 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            val isPaused by pausedState.collectAsState()
-            TetrisGame(isPaused = isPaused) {
-                _pausedState.value = it
+            // State to manage which screen is currently visible
+            var currentScreen by remember { mutableStateOf(Screen.Start) }
+            val activity = LocalContext.current as Activity
+
+            // Navigation logic
+            when (currentScreen) {
+                Screen.Start -> {
+                    StartScreen(
+                        onPlayClick = { currentScreen = Screen.Game },
+                        onExitClick = { activity.finish() }
+                    )
+                }
+                Screen.Game -> {
+                    // This handles the device's back button press
+                    BackHandler {
+                        currentScreen = Screen.Start
+                    }
+                    val isPaused by pausedState.collectAsState()
+                    TetrisGame(isPaused = isPaused) {
+                        _pausedState.value = it
+                    }
+                }
             }
         }
     }
@@ -53,6 +80,69 @@ class MainActivity : ComponentActivity() {
         return super.onKeyDown(keyCode, event)
     }
 }
+
+@Composable
+fun StartScreen(onPlayClick: () -> Unit, onExitClick: () -> Unit) {
+    var showInfoDialog by remember { mutableStateOf(false) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text(
+                "Pixel Tetris",
+                fontSize = 48.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.White
+            )
+            Spacer(modifier = Modifier.height(32.dp))
+            Button(
+                onClick = onPlayClick,
+                modifier = Modifier.width(120.dp)
+            ) {
+                Text("Play", fontSize = 22.sp)
+            }
+            Button(
+                onClick = { showInfoDialog = true },
+                modifier = Modifier.width(120.dp)
+            ) {
+                Text("Info", fontSize = 22.sp)
+            }
+            Button(
+                onClick = onExitClick,
+                modifier = Modifier.width(120.dp)
+            ) {
+                Text("Exit", fontSize = 22.sp)
+            }
+        }
+    }
+
+    if (showInfoDialog) {
+        AlertDialog(
+            onDismissRequest = { showInfoDialog = false },
+            title = { Text("Game Controls", fontSize = 24.sp) },
+            text = {
+                Column {
+                    Text("• Arrow Buttons: Move and rotate the piece.", fontSize = 16.sp)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text("• Volume Down Button: Pause or resume the game.", fontSize = 16.sp)
+                }
+            },
+            confirmButton = {
+                Button(onClick = { showInfoDialog = false }) {
+                    Text("Got it!")
+                }
+            }
+        )
+    }
+}
+
 
 @Composable
 fun TetrisGame(
@@ -185,12 +275,11 @@ fun TetrisGame(
                     // 1. Info Button at the top
                     Button(
                         onClick = { showInfoDialog = true },
-
                     ) {
                         Text("i", fontSize = 22.sp, fontWeight = FontWeight.Bold)
                     }
 
-                    Spacer(modifier = Modifier.height(24.dp))
+                    Spacer(modifier = Modifier.height(150.dp))
 
                     // 2. Score display below the button
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -204,7 +293,7 @@ fun TetrisGame(
                     }
 
                     // This weighted spacer pushes the Next Piece Preview to the bottom
-                    Spacer(Modifier.weight(0.6f))
+                    Spacer(Modifier.weight(10f))
 
                     // 3. Next Piece Preview at the bottom
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -212,7 +301,7 @@ fun TetrisGame(
                         Canvas(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 50.dp)
+                                .padding(vertical = 80.dp)
                                 .aspectRatio(1f)
                         ) {
                             val previewGridSize = 4
@@ -228,53 +317,96 @@ fun TetrisGame(
                 }
             }
 
-            // Controls at the very bottom
-            Row(
+            // --- ADAPTIVE CONTROLS (SOLUTION 3) ---
+            BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(70.dp),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
+                    .padding(bottom = 100.dp, start = 16.dp, end = 16.dp),
+                contentAlignment = Alignment.Center
             ) {
-                Button(onClick = {
-                    if (!isPaused && !gameOver) {
-                        val newPiece = currentPiece.copy(x = currentPiece.x - 1)
-                        if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) {
-                            currentPiece = newPiece
+                // Check the available width. The 360.dp is a common breakpoint for small phones.
+                if (maxWidth < 360.dp) {
+                    // --- ON NARROW SCREENS: Show two rows ---
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                            Button(onClick = {
+                                if (!isPaused && !gameOver) {
+                                    val newPiece = currentPiece.copy(x = currentPiece.x - 1)
+                                    if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) {
+                                        currentPiece = newPiece
+                                    }
+                                }
+                            }) { Text("←") }
+                            Button(onClick = {
+                                if (!isPaused && !gameOver) {
+                                    val newPiece = currentPiece.copy(x = currentPiece.x + 1)
+                                    if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) {
+                                        currentPiece = newPiece
+                                    }
+                                }
+                            }) { Text("→") }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                            Button(onClick = {
+                                if (!isPaused && !gameOver) {
+                                    val newPiece = currentPiece.copy(y = currentPiece.y + 1)
+                                    if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) {
+                                        currentPiece = newPiece
+                                    }
+                                }
+                            }) { Text("↓") }
+                            Button(onClick = {
+                                if (!isPaused && !gameOver) {
+                                    val newPiece = currentPiece.copy(rotation = (currentPiece.rotation + 1) % 4)
+                                    if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) {
+                                        currentPiece = newPiece
+                                    }
+                                }
+                            }) { Text("↻") }
                         }
                     }
-                }) { Text("←") }
-                Spacer(modifier = Modifier.width(10.dp))
-                Button(onClick = {
-                    if (!isPaused && !gameOver) {
-                        val newPiece = currentPiece.copy(x = currentPiece.x + 1)
-                        if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) {
-                            currentPiece = newPiece
-                        }
+                } else {
+                    // --- ON WIDER SCREENS: Show a single row ---
+                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        Button(onClick = {
+                            if (!isPaused && !gameOver) {
+                                val newPiece = currentPiece.copy(x = currentPiece.x - 1)
+                                if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) {
+                                    currentPiece = newPiece
+                                }
+                            }
+                        }) { Text("←") }
+                        Button(onClick = {
+                            if (!isPaused && !gameOver) {
+                                val newPiece = currentPiece.copy(x = currentPiece.x + 1)
+                                if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) {
+                                    currentPiece = newPiece
+                                }
+                            }
+                        }) { Text("→") }
+                        Button(onClick = {
+                            if (!isPaused && !gameOver) {
+                                val newPiece = currentPiece.copy(y = currentPiece.y + 1)
+                                if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) {
+                                    currentPiece = newPiece
+                                }
+                            }
+                        }) { Text("↓") }
+                        Button(onClick = {
+                            if (!isPaused && !gameOver) {
+                                val newPiece = currentPiece.copy(rotation = (currentPiece.rotation + 1) % 4)
+                                if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) {
+                                    currentPiece = newPiece
+                                }
+                            }
+                        }) { Text("↻") }
                     }
-                }) { Text("→") }
-                Spacer(modifier = Modifier.width(10.dp))
-                Button(onClick = {
-                    if (!isPaused && !gameOver) {
-                        val newPiece = currentPiece.copy(y = currentPiece.y + 1)
-                        if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) {
-                            currentPiece = newPiece
-                        }
-                    }
-                }) { Text("↓") }
-                Spacer(modifier = Modifier.width(10.dp))
-                Button(onClick = {
-                    if (!isPaused && !gameOver) {
-                        val newPiece = currentPiece.copy(rotation = (currentPiece.rotation + 1) % 4)
-                        if (validSpace(newPiece, lockedPositions, gridWidth, gridHeight)) {
-                            currentPiece = newPiece
-                        }
-                    }
-                }) { Text("↻") }
+                }
             }
         }
 
-        // --- Overlays (REVISED to include Reset Button) ---
+        // --- Overlays ---
         if (isPaused || gameOver) {
             Box(
                 modifier = Modifier
@@ -282,7 +414,6 @@ fun TetrisGame(
                     .background(Color.Black.copy(alpha = 0.7f)),
                 contentAlignment = Alignment.Center
             ) {
-                // Conditionally show different content for Paused vs. Game Over
                 if (gameOver) {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -300,7 +431,7 @@ fun TetrisGame(
                             Text("Reset Game", fontSize = 20.sp)
                         }
                     }
-                } else { // Game is Paused
+                } else {
                     Text(
                         text = "Paused",
                         color = white,
@@ -333,7 +464,7 @@ fun TetrisGame(
 }
 
 
-// --- Data Class & Utility Functions (No changes needed here) ---
+// --- Data Class & Utility Functions ---
 
 data class Piece(
     val x: Int, val y: Int, val shape: List<List<Int>>, val color: Color, val rotation: Int = 0
